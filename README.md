@@ -2,7 +2,7 @@
 
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 
-PyMBN is a Python implementation of the Multiple Sampling (MS) scheme for constructing stable Metabolic Brain Networks, as proposed in our [research paper](https://doi.org/10.1101/2021.03.16.435674).
+PyMBN is a Python implementation of the Multiple Sampling (MS) scheme for constructing stable Metabolic Brain Networks, as proposed in our [research paper](https://doi.org/10.1162/netn.a.23).
 
 
 
@@ -49,7 +49,7 @@ Results will be available in the `results/` and `outputs/` directories.
 
 
 ## 📖 Methods
-For detailed methodology, please refer to our paper: [Stable brain PET metabolic networks using a multiple sampling scheme](https://doi.org/10.1101/2021.03.16.435674)
+For detailed methodology, please refer to our paper: [Stable brain PET metabolic networks using a multiple sampling scheme](https://doi.org/10.1162/netn.a.23)
 
 ## 📬 Contact
 Guilherme Schu - guischu09@gmail.com
