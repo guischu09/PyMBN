@@ -11,7 +11,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from mayavi import mlab
+import open3d as o3d
 from mne_connectivity.viz import plot_connectivity_circle
 from skimage import measure
 
@@ -446,63 +446,117 @@ def plot_3d(
 
     adjSizes = adjSizes / np.max(adjSizes) * NODE_MAX_SIZE
 
-    ##### Mayvi scene ###
-    if not interactive:
-        mlab.options.offscreen = True
-
-    # make a mayavi -mlab figure
-    f = mlab.figure(1, size=(1000, 1000), fgcolor=(1, 1, 1), bgcolor=(1, 1, 1))
-
-    # create and add a mesh brain to the figure
-    mlab.triangular_mesh(x, y, z, faces, line_width=0.05, opacity=0.05, color=(0.82, 0.82, 0.82), figure=f)
-
-    # Adjust the initial camera view. We found out that view(-55,54,71) looks well for rat brains and view()
-    # view(180,90,546) looks decent for Humans
-
+    ##### Open3D scene ###
     if brain_type == "mice/rat":
-        mlab.view(-55, 54, 71)
+        view = (-55, 54, 71)  # mayavi-style (azimuth, elevation, distance) that looks well for rodent brains
         rtube = 0.03
-
-    if brain_type == "human":
-        mlab.view(180, 90, 546)
+        node_color = (1.0, 1.0, 1.0)
+    elif brain_type == "human":
+        view = (180, 90, 546)
         rtube = 0.08
+        node_color = (0.0, 0.0, 0.58)
+    else:
+        raise ValueError("Non supported brain_type. Supported types are 'mice/rat' and 'human'.")
 
-    # Plot/Display link between nodes as lines using the information in the adjacency matrix.
+    # Brain surface mesh
+    brain_mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(verts, dtype=float)),
+        o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int32)),
+    )
+    brain_mesh.compute_vertex_normals()
+    brain_mesh.paint_uniform_color((0.82, 0.82, 0.82))
+
+    # Edges as tubes, colored by correlation strength
+    edges_mesh = o3d.geometry.TriangleMesh()
     for p in pairs:
         correlation = network[p[0]][p[1]]
-
         if correlation != 0:
-            xinit = coordinates[p[0]][0]
-            yinit = coordinates[p[0]][1]
-            zinit = coordinates[p[0]][2]
+            color_rgb = m.to_rgba(correlation)[0:3]
+            edges_mesh += _make_tube(coordinates[p[0]], coordinates[p[1]], rtube, color_rgb)
 
-            xfinal = coordinates[p[1]][0]
-            yfinal = coordinates[p[1]][1]
-            zfinal = coordinates[p[1]][2]
-
-            color_rgb = m.to_rgba(correlation)
-            colors_rgb = color_rgb[0:3]
-
-            mlab.plot3d(
-                [xinit, xfinal],
-                [yinit, yfinal],
-                [zinit, zfinal],
-                line_width=0.02,
-                tube_radius=rtube,
-                color=colors_rgb,
-                figure=f,
-            )
-
-    # Creates the nodes on figure
+    # Nodes as spheres, sized by degree
+    nodes_mesh = o3d.geometry.TriangleMesh()
     for i in range(len(labels)):
-        s = adjSizes[i]
-        if brain_type == "human":
-            mlab.points3d(Xn[i], Yn[i], Zn[i], scale_factor=s, color=(0, 0, 0.58), line_width=0.02, opacity=1, figure=f)
-        if brain_type == "mice/rat":
-            mlab.points3d(Xn[i], Yn[i], Zn[i], scale_factor=s, color=(1, 1, 1), line_width=0.02, opacity=1, figure=f)
+        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=adjSizes[i] / 2, resolution=20)
+        sphere.translate((Xn[i], Yn[i], Zn[i]))
+        sphere.paint_uniform_color(node_color)
+        nodes_mesh += sphere
+    edges_mesh.compute_vertex_normals()
+    nodes_mesh.compute_vertex_normals()
+
+    # Camera: look at the brain center from the requested direction, at a distance that fits the brain
+    bbox = brain_mesh.get_axis_aligned_bounding_box()
+    center = bbox.get_center()
+    radius = np.linalg.norm(bbox.get_extent()) / 2
+    distance = 1.1 * radius / np.sin(np.radians(CAMERA_FOV_DEG / 2))
+    eye = _view_to_eye(view[0], view[1], distance, focal=center)
 
     if interactive:
-        mlab.show()
+        o3d.visualization.draw_geometries(
+            [brain_mesh, edges_mesh, nodes_mesh], window_name=os.path.basename(output_path), width=1000, height=1000
+        )
     else:
-        # Save figure
-        mlab.savefig(output_path, magnification=10)
+        _render_offscreen(brain_mesh, edges_mesh, nodes_mesh, center, eye, output_path)
+        logging.info(f">> 3D brain image saved to {output_path}")
+
+
+CAMERA_FOV_DEG = 30.0
+
+
+def _view_to_eye(azimuth: float, elevation: float, distance: float, focal: np.ndarray) -> np.ndarray:
+    """Convert a mayavi-style view (azimuth about z, elevation from z, distance) into a camera position."""
+    az, el = np.radians(azimuth), np.radians(elevation)
+    direction = np.array([np.cos(az) * np.sin(el), np.sin(az) * np.sin(el), np.cos(el)])
+    return np.asarray(focal) + distance * direction
+
+
+def _make_tube(p0, p1, radius: float, color) -> o3d.geometry.TriangleMesh:
+    """Cylinder from p0 to p1 with the given radius and RGB color."""
+    p0, p1 = np.asarray(p0, dtype=float), np.asarray(p1, dtype=float)
+    direction = p1 - p0
+    length = np.linalg.norm(direction)
+    tube = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=length, resolution=12, split=1)
+    if length > 0:
+        z = np.array([0.0, 0.0, 1.0])
+        d = direction / length
+        axis = np.cross(z, d)
+        s = np.linalg.norm(axis)
+        angle = np.arctan2(s, np.dot(z, d))
+        if s > 1e-8:
+            tube.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle(axis / s * angle), center=(0, 0, 0))
+        elif angle > np.pi / 2:  # anti-parallel
+            tube.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi, 0, 0]), center=(0, 0, 0))
+    tube.translate((p0 + p1) / 2)
+    tube.paint_uniform_color(color)
+    return tube
+
+
+def _render_offscreen(
+    brain_mesh, edges_mesh, nodes_mesh, center, eye, output_path: str, size: int = 2000, lit: bool = True
+) -> None:
+    """Render the scene headlessly (EGL) and save it as an image."""
+    from open3d.visualization import rendering
+
+    renderer = rendering.OffscreenRenderer(size, size)
+    scene = renderer.scene
+    scene.set_background([1.0, 1.0, 1.0, 1.0])
+    scene.view.set_post_processing(False)
+    scene.scene.set_sun_light([0.3, 0.2, -1.0], [1.0, 1.0, 1.0], 120000)
+    scene.scene.enable_sun_light(True)
+    scene.scene.set_indirect_light_intensity(60000)
+
+    brain_mat = rendering.MaterialRecord()
+    brain_mat.shader = "defaultLitTransparency"
+    brain_mat.base_color = [0.82, 0.82, 0.82, 0.12]
+
+    solid_mat = rendering.MaterialRecord()
+    solid_mat.shader = "defaultLit" if lit else "defaultUnlit"
+
+    if len(edges_mesh.vertices) > 0:
+        scene.add_geometry("edges", edges_mesh, solid_mat)
+    scene.add_geometry("nodes", nodes_mesh, solid_mat)
+    scene.add_geometry("brain", brain_mesh, brain_mat)
+
+    renderer.setup_camera(CAMERA_FOV_DEG, np.asarray(center), np.asarray(eye), [0.0, 0.0, 1.0])
+    image = renderer.render_to_image()
+    o3d.io.write_image(output_path, image)

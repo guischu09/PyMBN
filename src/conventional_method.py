@@ -4,7 +4,7 @@ import numpy as np
 
 from .base_classes import Setup
 from .data_importer import PetData
-from .ms_scheme import (
+from .mbn_statistics import (
     compute_network_weights,
     multiple_comparison_correction,
     threshold_correction,

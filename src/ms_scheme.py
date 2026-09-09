@@ -1,4 +1,5 @@
-from typing import Tuple
+import logging
+from typing import Optional, Tuple
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -11,7 +12,6 @@ from .mbn_statistics import (
     multiple_comparison_correction,
     threshold_correction,
 )
-import logging
 
 
 def compute_ms(data: PetData, setup: Setup) -> MSComputations:
@@ -24,23 +24,31 @@ def compute_ms(data: PetData, setup: Setup) -> MSComputations:
     ) = multiple_sampling_scheme(data, setup)
 
     n_classes = len(data)
-    binary_map = prob_mat >= setup.probability_treshold
+    # Eq. 5: retain an edge only if its probability of occurrence exceeds theta
+    binary_map = prob_mat > setup.theta
 
-    # Apply Treshold with Probability Map to all generated matrices
+    # Apply threshold with probability map to all generated (corrected) matrices
     for n in range(n_classes):
-        temp = binary_map[:, :, n].astype("uint8")
-        weights_corrected[:, :, n] = weights_corrected[:, :, n] * temp.reshape(-1, 1)
+        mask = binary_map[:, :, n].ravel()
+        weights_corrected[~mask, :, n] = 0
+        pval_corrected[~mask, :, n] = 1
 
     return MSComputations(weights_corrected, pval_corrected, weights_noncorrected, pval_noncorrected)
 
 
-def multiple_sampling_scheme(data: PetData, setup: Setup) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # Default option: run sequentially
-    if not hasattr(setup, "n_workers"):
-        setattr(setup, "n_workers", 1)
+def multiple_sampling_scheme(
+    data: PetData, setup: Setup
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_classes = len(data)
+    n_workers = int(getattr(setup, "n_workers", 1))
 
-    output = Parallel(n_jobs=int(setup.n_workers))(delayed(sample_data)(data[c], setup) for c in tqdm(range(n_classes)))
+    # One seed per group drawn from the global RNG, so results are reproducible
+    # regardless of whether groups are processed sequentially or in parallel workers.
+    seeds = np.random.randint(0, 2**31 - 1, size=n_classes)
+
+    output = Parallel(n_jobs=n_workers)(
+        delayed(sample_data)(data[c], setup, seed=int(seeds[c])) for c in tqdm(range(n_classes))
+    )
 
     weights_corrected, pval_corrected, weights_noncorrected, pval_noncorrected, prob_mat = zip(*output)
     return (
@@ -52,7 +60,17 @@ def multiple_sampling_scheme(data: PetData, setup: Setup) -> Tuple[np.ndarray, n
     )
 
 
-def sample_data(data_group: tuple, setup: Setup) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def sample_data(
+    data_group: tuple, setup: Setup, seed: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Generate setup.n_samples networks for one group (Algorithm 1, lines 2-6, plus the Pmap of Eq. 3).
+
+    Returns flattened (n_vois**2, n_samples) arrays of corrected/non-corrected weights and
+    p-values, and the (n_vois, n_vois) probability map.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
     n_vois = data_group[0].shape[1]
 
     acc_weights_corrected = np.zeros((n_vois**2, setup.n_samples))
@@ -69,26 +87,25 @@ def sample_data(data_group: tuple, setup: Setup) -> Tuple[np.ndarray, np.ndarray
         new_rows = gen_rows(setup, n_rows)
         gen_data = data_group[0][new_rows, :]
 
-        # Compute network weights (e.g Peason correlation)
+        # Compute network weights (e.g Pearson correlation), Eq. 1
         weights, pvalue = compute_network_weights(gen_data, setup)
 
         # Apply multiple comparison correction (e.g. fdr, bonferroni)
         weights_corrected, pvalue_corrected = multiple_comparison_correction(weights, pvalue, setup)
 
-        # Apply threshold defined in setup.threshold
-        weights_corrected, pvalue_corrected = threshold_correction(weights, pvalue, setup)
+        # Apply the absolute weight threshold defined in setup.threshold
+        weights_corrected, pvalue_corrected = threshold_correction(weights_corrected, pvalue_corrected, setup)
 
         # Accumulate corrected weights for each sample
         acc_weights_corrected[:, k] = weights_corrected.ravel()
         acc_pval_corrected[:, k] = pvalue_corrected.ravel()
 
-        # Accumulate non corrected weights
+        # Accumulate non corrected weights (raw M^k used by the representative criteria)
         acc_weights_noncorrected[:, k] = weights.ravel()
         acc_pval_noncorrected[:, k] = pvalue.ravel()
 
-        # Accumulate binary maps
-        pmap = weights_corrected != 0
-        prob_mat += pmap.astype("uint8")
+        # Accumulate binary maps, Eq. 3
+        prob_mat += (weights_corrected != 0).astype("uint8")
 
     # Normalize prob_mat
     prob_mat = prob_mat / setup.n_samples
@@ -106,12 +123,16 @@ def gen_rows(setup: Setup, n_rows: int) -> np.ndarray:
         # Bootstrap Indices (i.e. random select repeated indices within some interval)
         new_rows = np.random.randint(n_rows, size=n_rows)
     elif setup.random_type == "subsampling":
-        # generate a random value between [min_remov max_remov]
-        prop = setup.min_remov + (setup.max_remov - setup.min_remov) * np.random.rand()
+        min_remov = getattr(setup, "min_remov", 0.005)
+        max_remov = getattr(setup, "max_remov", 0.10)
+        # generate a random removal proportion between [min_remov, max_remov]
+        prop = min_remov + (max_remov - min_remov) * np.random.rand()
         # generate the number of rows to remove
         n_remove = round(prop * n_rows)
         # generate the rows that will be used for sample the new data
         new_rows = np.random.permutation(n_rows)[: n_rows - n_remove]
+    else:
+        raise ValueError(f"Unknown random_type: {setup.random_type!r} (expected 'bootstrap' or 'subsampling')")
     return new_rows
 
 

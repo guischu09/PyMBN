@@ -18,26 +18,26 @@ PyMBN is a Python implementation of the Multiple Sampling (MS) scheme for constr
 
 ## 🔧 Installation
 
-1. **Set up Conda Environment**
+1. **Set up Environment** (requires [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html))
 ```bash
-# Create and activate conda environment
-conda create -n pymbn python=3.10 pip
-conda activate pymbn
+# Create and activate environment
+micromamba create -n pymbn python=3.10 pip -c conda-forge
+micromamba activate pymbn
 
 # Install dependencies
-pip install -r requirements.txt --no-deps
+pip install -r requirements.txt
 ```
 
 2. **Install System Dependencies** (Ubuntu/Debian)
 ```bash
-sudo apt-get install python3-pyqt5.qtsvg libxcb-xinerama0
+sudo apt-get install python3-tk libgl1 libegl1 libgomp1
 ```
 
 ## 💻 Usage
 
 1. **Activate Environment**
 ```bash
-conda activate pymbn
+micromamba activate pymbn
 ```
 
 2. **Run Analysis**
@@ -45,7 +45,15 @@ conda activate pymbn
 python main.py
 ```
 
+Parameters (alpha, theta, number of samples, sampling type, representative criterion, etc.) are set in `ManualSetup` in `src/ui_parser.py`.
+
 Results will be available in the `results/` and `outputs/` directories.
+
+3. **Run Tests** (optional)
+```bash
+pip install pytest
+pytest
+```
 
 
 ## 📖 Methods

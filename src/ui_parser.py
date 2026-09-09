@@ -124,11 +124,11 @@ class ManualSetup(SetupHelper):
     def get_parameters(self) -> Setup:
         return Setup(
             alpha=0.05,
-            theta=0.95,
+            theta=0.95,  # probability map threshold, paper: theta = 1 - alpha
             threshold=0.3,
             weights="pearson_correlation",
             correction_type="fdr_bh",
-            criteria_representation="mean",  # "mean" #geodesic
+            criteria_representation="mean",  # "mean", "median", "mode", "geodesic"
             data_balance="imbalanced",
             n_samples_measures=30,
             plot_3d=True,
@@ -136,9 +136,8 @@ class ManualSetup(SetupHelper):
             which_plot="heatmap",
             output_format="png",
             mbn_method="ms_scheme",  # "ms_scheme", "conventional"
-            probability_treshold=0.95,
             n_samples=100,
-            random_type="bootstrap",
+            random_type="bootstrap",  # "bootstrap", "subsampling"
             interactive=True,
             seed=13,
         )
